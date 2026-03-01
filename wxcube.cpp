@@ -538,26 +538,24 @@ class CubeCanvas : public wxPanel
                 {
                     move_slice_by_angle(axis, slice, slice_angle(axis, rotation));
                 }
-                void rotate(const Cube::Axis axis, const Cube::Rotation rotation)
+                void rotate_by_angle(const Cube::Axis axis, double angle)
                 {
                     switch (axis)
                     {
                         case Cube::TopBottom:
-                        {
-                            big_cube_.rotate_about_y_axis(static_cast<int>(rotation) * M_PI/2.0, big_cube_origin_);
-                        }
-                        break;
+                            big_cube_.rotate_about_y_axis(angle, big_cube_origin_);
+                            break;
                         case Cube::RightFrontLeftBack:
-                        {
-                            big_cube_.rotate_about_x_axis(static_cast<int>(rotation) * M_PI/2.0, big_cube_origin_);
-                        }
-                        break;
+                            big_cube_.rotate_about_x_axis(angle, big_cube_origin_);
+                            break;
                         case Cube::LeftFrontRightBack:
-                        {
-                            big_cube_.rotate_about_z_axis(-static_cast<int>(rotation) * M_PI/2.0, big_cube_origin_);
-                        }
-                        break;
+                            big_cube_.rotate_about_z_axis(angle, big_cube_origin_);
+                            break;
                     }
+                }
+                void rotate(const Cube::Axis axis, const Cube::Rotation rotation)
+                {
+                    rotate_by_angle(axis, slice_angle(axis, rotation));
                 }
 
                 void perform_move(const Cube::Move& move) 
@@ -616,23 +614,29 @@ class CubeCanvas : public wxPanel
                                   int n_steps = ANIMATION_STEPS,
                                   int step_delay_ms = ANIMATION_STEP_DELAY_MS)
                 {
-                    // Only animate SliceMoves; RotateMoves stay instant
                     const Cube::SliceMove* slice_move = dynamic_cast<const Cube::SliceMove*>(&move);
-                    if (!slice_move)
+                    const Cube::RotateMove* rotate_move = dynamic_cast<const Cube::RotateMove*>(&move);
+
+                    if (!slice_move && !rotate_move)
                     {
                         perform_move(move);
                         return;
                     }
 
-                    double step_angle = slice_angle(slice_move->axis_, slice_move->rotation_) / n_steps;
+                    Cube::Axis axis = slice_move ? slice_move->axis_ : rotate_move->axis_;
+                    Cube::Rotation rotation = slice_move ? slice_move->rotation_ : rotate_move->rotation_;
+                    double step_angle = slice_angle(axis, rotation) / n_steps;
 
-                    // Un-rotate the viewing angle so the slice origins are canonical
+                    // Un-rotate the viewing angle so the slice/cube origins are canonical
                     big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, big_cube_origin_);
                     big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, big_cube_origin_);
 
                     for (int step = 0; step < n_steps; ++step)
                     {
-                        move_slice_by_angle(slice_move->axis_, slice_move->slice_, step_angle);
+                        if (slice_move)
+                            move_slice_by_angle(slice_move->axis_, slice_move->slice_, step_angle);
+                        else
+                            rotate_by_angle(rotate_move->axis_, step_angle);
 
                         // Re-apply viewing angle so the repaint shows the correct perspective
                         big_cube_.rotate_about_y_axis(VIEWING_ANGLE_Y, big_cube_origin_);
@@ -657,23 +661,37 @@ class CubeCanvas : public wxPanel
                                           int step_delay_ms = ANIMATION_STEP_DELAY_MS)
                 {
                     const Cube::SliceMove* slice_move = dynamic_cast<const Cube::SliceMove*>(&move);
-                    if (!slice_move)
+                    const Cube::RotateMove* rotate_move = dynamic_cast<const Cube::RotateMove*>(&move);
+
+                    if (slice_move)
+                    {
+                        Cube::SliceMove inverse(*slice_move);
+                        inverse.rotation_ = Cube::invert(inverse.rotation_);
+                        animate_move(inverse, refresh_window, n_steps, step_delay_ms);
+                    }
+                    else if (rotate_move)
+                    {
+                        Cube::RotateMove inverse(*rotate_move);
+                        inverse.rotation_ = Cube::invert(inverse.rotation_);
+                        animate_move(inverse, refresh_window, n_steps, step_delay_ms);
+                    }
+                    else
                     {
                         perform_inverse_move(move);
-                        return;
                     }
-                    Cube::SliceMove inverse(*slice_move);
-                    inverse.rotation_ = Cube::invert(inverse.rotation_);
-                    animate_move(inverse, refresh_window, n_steps, step_delay_ms);
                 }
 
             private:
                 // Compute the signed rotation angle in radians for a given axis/rotation.
                 // LeftFrontRightBack uses the opposite hand convention from the other two axes.
+                // The result is normalized to (-π, π] so that animation always takes the
+                // shortest angular path: e.g. ThreeQuarters becomes -π/2, not +3π/2.
                 static double slice_angle(const Cube::Axis axis, const Cube::Rotation rotation)
                 {
                     double angle = static_cast<int>(rotation) * M_PI / 2.0;
                     if (axis == Cube::LeftFrontRightBack) angle = -angle;
+                    if (angle > M_PI)  angle -= 2.0 * M_PI;
+                    else if (angle < -M_PI) angle += 2.0 * M_PI;
                     return angle;
                 }
 
