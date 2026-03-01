@@ -611,6 +611,7 @@ class CubeCanvas : public wxPanel
                 }
 
                 void animate_move(const Cube::Move& move, wxWindow* refresh_window,
+                                  Cube3DModel* secondary_model = nullptr,
                                   int n_steps = ANIMATION_STEPS,
                                   int step_delay_ms = ANIMATION_STEP_DELAY_MS)
                 {
@@ -620,6 +621,7 @@ class CubeCanvas : public wxPanel
                     if (!slice_move && !rotate_move)
                     {
                         perform_move(move);
+                        if (secondary_model) secondary_model->perform_move(move);
                         return;
                     }
 
@@ -628,19 +630,27 @@ class CubeCanvas : public wxPanel
                     double step_angle = slice_angle(axis, rotation) / n_steps;
 
                     // Un-rotate the viewing angle so the slice/cube origins are canonical
-                    big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, big_cube_origin_);
-                    big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, big_cube_origin_);
+                    unrotate_viewing_angle(*this);
+                    if (secondary_model) unrotate_viewing_angle(*secondary_model);
 
                     for (int step = 0; step < n_steps; ++step)
                     {
                         if (slice_move)
+                        {
                             move_slice_by_angle(slice_move->axis_, slice_move->slice_, step_angle);
+                            if (secondary_model)
+                                secondary_model->move_slice_by_angle(slice_move->axis_, slice_move->slice_, step_angle);
+                        }
                         else
+                        {
                             rotate_by_angle(rotate_move->axis_, step_angle);
+                            if (secondary_model)
+                                secondary_model->rotate_by_angle(rotate_move->axis_, step_angle);
+                        }
 
                         // Re-apply viewing angle so the repaint shows the correct perspective
-                        big_cube_.rotate_about_y_axis(VIEWING_ANGLE_Y, big_cube_origin_);
-                        big_cube_.rotate_about_x_axis(-VIEWING_ANGLE_X, big_cube_origin_);
+                        rerotate_viewing_angle(*this);
+                        if (secondary_model) rerotate_viewing_angle(*secondary_model);
 
                         refresh_window->Refresh();
                         refresh_window->Update();
@@ -649,14 +659,15 @@ class CubeCanvas : public wxPanel
                         if (step < n_steps - 1)
                         {
                             // Un-rotate again for the next animation step
-                            big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, big_cube_origin_);
-                            big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, big_cube_origin_);
+                            unrotate_viewing_angle(*this);
+                            if (secondary_model) unrotate_viewing_angle(*secondary_model);
                         }
                     }
-                    // After the final step big_cube_ is already in viewing orientation
+                    // After the final step both models are already in viewing orientation
                 }
 
                 void animate_inverse_move(const Cube::Move& move, wxWindow* refresh_window,
+                                          Cube3DModel* secondary_model = nullptr,
                                           int n_steps = ANIMATION_STEPS,
                                           int step_delay_ms = ANIMATION_STEP_DELAY_MS)
                 {
@@ -667,21 +678,35 @@ class CubeCanvas : public wxPanel
                     {
                         Cube::SliceMove inverse(*slice_move);
                         inverse.rotation_ = Cube::invert(inverse.rotation_);
-                        animate_move(inverse, refresh_window, n_steps, step_delay_ms);
+                        animate_move(inverse, refresh_window, secondary_model, n_steps, step_delay_ms);
                     }
                     else if (rotate_move)
                     {
                         Cube::RotateMove inverse(*rotate_move);
                         inverse.rotation_ = Cube::invert(inverse.rotation_);
-                        animate_move(inverse, refresh_window, n_steps, step_delay_ms);
+                        animate_move(inverse, refresh_window, secondary_model, n_steps, step_delay_ms);
                     }
                     else
                     {
                         perform_inverse_move(move);
+                        if (secondary_model) secondary_model->perform_inverse_move(move);
                     }
                 }
 
             private:
+                // Remove the viewing angle from a model so rotations act in canonical space.
+                static void unrotate_viewing_angle(Cube3DModel& m)
+                {
+                    m.big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, m.big_cube_origin_);
+                    m.big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, m.big_cube_origin_);
+                }
+                // Re-apply the viewing angle after a canonical-space rotation step.
+                static void rerotate_viewing_angle(Cube3DModel& m)
+                {
+                    m.big_cube_.rotate_about_y_axis(VIEWING_ANGLE_Y, m.big_cube_origin_);
+                    m.big_cube_.rotate_about_x_axis(-VIEWING_ANGLE_X, m.big_cube_origin_);
+                }
+
                 // Compute the signed rotation angle in radians for a given axis/rotation.
                 // LeftFrontRightBack uses the opposite hand convention from the other two axes.
                 // The result is normalized to (-π, π] so that animation always takes the
@@ -885,8 +910,7 @@ void CubeCanvas::OnButtonUndo(wxCommandEvent& WXUNUSED(event))
     }
     Cube::Move* last_move = *(move_history_.rbegin());
     last_move->perform_inverse(parent_->cube_);
-    cube3d_model_.animate_inverse_move(*last_move, this);
-    cube3d_model_small_.perform_inverse_move(*last_move);
+    cube3d_model_.animate_inverse_move(*last_move, this, &cube3d_model_small_);
     move_history_.erase(move_history_.end() - 1);
     parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(last_move->inverse_to_string().c_str()));
     delete last_move;
@@ -977,10 +1001,12 @@ void CubeCanvas::perform_move(const Cube::Move& move, bool animate)
 {
     move.perform(parent_->cube_);
     if (animate)
-        cube3d_model_.animate_move(move, this);
+        cube3d_model_.animate_move(move, this, &cube3d_model_small_);
     else
+    {
         cube3d_model_.perform_move(move);
-    cube3d_model_small_.perform_move(move);
+        cube3d_model_small_.perform_move(move);
+    }
     move_history_.push_back(move.clone());
     parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(move.to_string().c_str()));
     parent_->Refresh();
