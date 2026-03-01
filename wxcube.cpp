@@ -742,6 +742,9 @@ class CubeCanvas : public wxPanel
         wxBrush* brushes_[Cube::NumberOfColours];
         CubeFrame* parent_;
         wxPoint* start_drag_point_;
+        wxPoint cube_drag_offset_;
+        wxPoint last_mouse_pos_;
+        bool is_translating_cube_;
         wxButton* randomize_button_;
         wxButton* solve_button_;
         wxButton* undo_button_;
@@ -847,7 +850,8 @@ CubeCanvas::CubeModel::CubeModel(const wxPoint& origin, int unit)
 CubeCanvas::CubeCanvas(CubeFrame* parent, int screen_width, int screen_height)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(screen_width, screen_height), wxNO_FULL_REPAINT_ON_RESIZE), 
       screen_width_(screen_width), screen_height_(screen_height), cube_model_(wxPoint(265,100)),
-      start_drag_point_(0), log_(0), move_history_(), cube3d_model_(parent->cube_), cube3d_model_small_(parent->cube_, 20)
+      start_drag_point_(0), cube_drag_offset_(0, 0), last_mouse_pos_(0, 0), is_translating_cube_(false),
+      log_(0), move_history_(), cube3d_model_(parent->cube_), cube3d_model_small_(parent->cube_, 20)
 {
     parent_ = parent;
 //    wxGraphicsRenderer* renderer = wxGraphicsRenderer::GetDefaultRenderer();
@@ -1508,7 +1512,7 @@ void CubeCanvas::draw_cube(wxDC& dc)
     //cube_model_.draw_cube(dc, brushes_, parent_->cube_);
     Projector projector(screen_width_, screen_height_);
 
-    draw_object3D(dc, projector, cube3d_model_.get_object(), wxPoint(0, 0));
+    draw_object3D(dc, projector, cube3d_model_.get_object(), cube_drag_offset_);
 
     Cube::RotateMove moves[] = { 
         Cube::RotateMove(Cube::TopBottom, Cube::Quarter, __LINE__),
@@ -2191,203 +2195,21 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
     }
     else
     {
-        if (cube_model_.right_of_top_face(wxPoint(xpos, ypos)))
+        if (event.LeftDown() && !start_drag_point_)
         {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::TopFace, theta);
-                        if (direction == UP)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == DOWN)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
+            last_mouse_pos_ = wxPoint(xpos, ypos);
+            is_translating_cube_ = true;
         }
-        else if (cube_model_.right_of_right_face(wxPoint(xpos, ypos)))
+        else if (event.Dragging() && event.LeftIsDown() && is_translating_cube_)
         {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::RightFrontFace, theta);
-                        if (direction == UP)
-                        {
-                            do_perform_rotate_move(Cube::LeftFrontRightBack, Cube::ThreeQuarters);
-                        }
-                        else if (direction == DOWN)
-                        {
-                            do_perform_rotate_move(Cube::LeftFrontRightBack, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
+            cube_drag_offset_.x += xpos - last_mouse_pos_.x;
+            cube_drag_offset_.y += ypos - last_mouse_pos_.y;
+            last_mouse_pos_ = wxPoint(xpos, ypos);
+            parent_->Refresh();
         }
-        else if (cube_model_.below_right_face(wxPoint(xpos, ypos)))
+        else if (event.LeftUp())
         {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::RightFrontFace, theta);
-                        if (direction == RIGHT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == LEFT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.below_left_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::LeftFrontFace, theta);
-                        if (direction == RIGHT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == LEFT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.left_of_left_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::LeftFrontFace, theta);
-                        if (direction == UP)
-                        {
-                            do_perform_rotate_move(Cube::RightFrontLeftBack, Cube::Quarter);
-                        }
-                        else if (direction == DOWN)
-                        {
-                            do_perform_rotate_move(Cube::RightFrontLeftBack, Cube::ThreeQuarters);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.above_top_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::TopFace, theta);
-                        if (direction == LEFT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == RIGHT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
+            is_translating_cube_ = false;
         }
     }
 //    parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(oss.str().c_str()));
