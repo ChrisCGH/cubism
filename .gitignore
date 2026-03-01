@@ -1,0 +1,3 @@
+*.o
+wxcube
+_codeql_detected_source_root
