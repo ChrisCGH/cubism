@@ -292,7 +292,7 @@ class Object3D
 
         void rotate_about_z_axis(int id, double theta, const Point3D& origin) 
         {
-            shape_list_[id]->rotate_about_z_axis(theta, origin);
+            shape_map_[id]->rotate_about_z_axis(theta, origin);
         }
 
         void move(const Point3D& v)

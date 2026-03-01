@@ -787,9 +787,8 @@ void CubeCanvas::OnLeftButtonDClick(wxMouseEvent& event)
     wxUnusedVar(event);
 }
 
-void CubeCanvas::OnButtonUndo(wxCommandEvent& event)
+void CubeCanvas::OnButtonUndo(wxCommandEvent& WXUNUSED(event))
 {
-    event.GetEventType();
     if (move_history_.empty())
     {
         return;
@@ -805,9 +804,8 @@ void CubeCanvas::OnButtonUndo(wxCommandEvent& event)
     parent_->Update();
 }
 
-void CubeCanvas::OnButtonSolve(wxCommandEvent& event)
+void CubeCanvas::OnButtonSolve(wxCommandEvent& WXUNUSED(event))
 {
-    event.GetEventType();
     Cube::move_sequence_type solution;
     parent_->cube_.solve(solution);
     for (auto& move : solution)
@@ -819,9 +817,8 @@ void CubeCanvas::OnButtonSolve(wxCommandEvent& event)
 
 }
 
-void CubeCanvas::OnButtonRandomize(wxCommandEvent& event)
+void CubeCanvas::OnButtonRandomize(wxCommandEvent& WXUNUSED(event))
 {
-    event.GetEventType();
     Cube::move_sequence_type random_sequence;
     parent_->cube_.randomize(random_sequence);
     for (auto& move : random_sequence)
@@ -876,7 +873,7 @@ void CubeCanvas::OnButtonTest(wxCommandEvent& event)
     }
     catch (const CubeException& e)
     {
-        e.what();
+        std::cerr << e.what() << std::endl;
         return;
     }
 }

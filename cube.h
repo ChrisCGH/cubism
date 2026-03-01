@@ -1,29 +1,33 @@
 #ifndef CUBE_H
 #define CUBE_H
+#include <exception>
 #include <string>
 #include <vector>
 #include <set>
 #include <map>
 #include <sstream>
 
-class CubeException
+class CubeException : public std::exception
 {
     public:
         CubeException(const std::string& message, const std::string& file, int line_number)
-            : message_(message), file_(file), line_number_(line_number) {}
-        ~CubeException() {}
-        std::string what() const
+            : message_(message), file_(file), line_number_(line_number)
         {
             std::ostringstream oss;
             oss << "CubeException : " << message_ << " : " << file_ << " (" << line_number_ << ")";
-
-            return oss.str();
+            what_ = oss.str();
+        }
+        ~CubeException() noexcept override {}
+        const char* what() const noexcept override
+        {
+            return what_.c_str();
         }
 
     private:
         std::string message_;
         std::string file_;
         int line_number_;
+        std::string what_;
 };
 
 class Cube
