@@ -67,7 +67,7 @@ class CubeCanvas : public wxPanel
         void draw_cube(wxDC& dc);
         void draw_shape3D(wxDC& dc, const Projector& projector, const Shape3D& shape, const wxPoint& origin);
         void draw_object3D(wxDC& dc, const Projector& projector, const Object3D& object, const wxPoint& origin);
-        void perform_move(const Cube::Move& move);
+        void perform_move(const Cube::Move& move, bool animate = true);
         Cube::move_sequence_type move_history_;
 
         void perform_move(const Cube::Axis axis, const Cube::Slice slice, const Cube::Rotation rotation, int line_number);
@@ -306,7 +306,7 @@ class CubeCanvas : public wxPanel
                 {
                     big_cube_.rotate_about_z_axis(theta, big_cube_origin_);
                 }
-                void move_slice(const Cube::Axis axis, const Cube::Slice slice, const Cube::Rotation rotation)
+                void move_slice_by_angle(const Cube::Axis axis, const Cube::Slice slice, double angle_radians)
                 {
                     // slice_map gives the mapping from axis/slice -> index into big_cube_ shape list
                     // Each shape in the list is a small cube
@@ -423,7 +423,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_y_axis(index, static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_y_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -434,7 +434,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_y_axis(index, static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_y_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -445,7 +445,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_y_axis(index, static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_y_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -463,7 +463,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_x_axis(index, static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_x_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -474,7 +474,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_x_axis(index, static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_x_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -485,7 +485,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_x_axis(index, static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_x_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -503,7 +503,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_z_axis(index, -static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_z_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -514,7 +514,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_z_axis(index, -static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_z_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -525,7 +525,7 @@ class CubeCanvas : public wxPanel
                                     for (int i = 0; i < count; ++i)
                                     {
                                         int index = cube_.identify_piece(slice_map[axis][slice][i + 1]);
-                                        big_cube_.rotate_about_z_axis(index, -static_cast<int>(rotation)*M_PI/2.0, origin);
+                                        big_cube_.rotate_about_z_axis(index, angle_radians, origin);
                                     }
                                 }
                                 break;
@@ -534,32 +534,34 @@ class CubeCanvas : public wxPanel
                         break;
                     }
                 }
-                void rotate(const Cube::Axis axis, const Cube::Rotation rotation)
+                void move_slice(const Cube::Axis axis, const Cube::Slice slice, const Cube::Rotation rotation)
+                {
+                    move_slice_by_angle(axis, slice, slice_angle(axis, rotation));
+                }
+                void rotate_by_angle(const Cube::Axis axis, double angle)
                 {
                     switch (axis)
                     {
                         case Cube::TopBottom:
-                        {
-                            big_cube_.rotate_about_y_axis(static_cast<int>(rotation) * M_PI/2.0, big_cube_origin_);
-                        }
-                        break;
+                            big_cube_.rotate_about_y_axis(angle, big_cube_origin_);
+                            break;
                         case Cube::RightFrontLeftBack:
-                        {
-                            big_cube_.rotate_about_x_axis(static_cast<int>(rotation) * M_PI/2.0, big_cube_origin_);
-                        }
-                        break;
+                            big_cube_.rotate_about_x_axis(angle, big_cube_origin_);
+                            break;
                         case Cube::LeftFrontRightBack:
-                        {
-                            big_cube_.rotate_about_z_axis(-static_cast<int>(rotation) * M_PI/2.0, big_cube_origin_);
-                        }
-                        break;
+                            big_cube_.rotate_about_z_axis(angle, big_cube_origin_);
+                            break;
                     }
+                }
+                void rotate(const Cube::Axis axis, const Cube::Rotation rotation)
+                {
+                    rotate_by_angle(axis, slice_angle(axis, rotation));
                 }
 
                 void perform_move(const Cube::Move& move) 
                 {
-                    big_cube_.rotate_about_x_axis(M_PI/5.0, big_cube_origin_);
-                    big_cube_.rotate_about_y_axis(-M_PI/4.0, big_cube_origin_);
+                    big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, big_cube_origin_);
+                    big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, big_cube_origin_);
                     try
                     {
                         const Cube::SliceMove& slice_move = dynamic_cast<const Cube::SliceMove&>(move);
@@ -576,14 +578,14 @@ class CubeCanvas : public wxPanel
                         {
                         }
                     }
-                    big_cube_.rotate_about_y_axis(M_PI/4.0, big_cube_origin_);
-                    big_cube_.rotate_about_x_axis(-M_PI/5.0, big_cube_origin_);
+                    big_cube_.rotate_about_y_axis(VIEWING_ANGLE_Y, big_cube_origin_);
+                    big_cube_.rotate_about_x_axis(-VIEWING_ANGLE_X, big_cube_origin_);
                 }
 
                 void perform_inverse_move(const Cube::Move& move) 
                 {
-                    big_cube_.rotate_about_x_axis(M_PI/5.0, big_cube_origin_);
-                    big_cube_.rotate_about_y_axis(-M_PI/4.0, big_cube_origin_);
+                    big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, big_cube_origin_);
+                    big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, big_cube_origin_);
                     try
                     {
                         const Cube::SliceMove& slice_move = dynamic_cast<const Cube::SliceMove&>(move);
@@ -604,11 +606,124 @@ class CubeCanvas : public wxPanel
                         {
                         }
                     }
-                    big_cube_.rotate_about_y_axis(M_PI/4.0, big_cube_origin_);
-                    big_cube_.rotate_about_x_axis(-M_PI/5.0, big_cube_origin_);
+                    big_cube_.rotate_about_y_axis(VIEWING_ANGLE_Y, big_cube_origin_);
+                    big_cube_.rotate_about_x_axis(-VIEWING_ANGLE_X, big_cube_origin_);
+                }
+
+                void animate_move(const Cube::Move& move, wxWindow* refresh_window,
+                                  Cube3DModel* secondary_model = nullptr,
+                                  int n_steps = ANIMATION_STEPS,
+                                  int step_delay_ms = ANIMATION_STEP_DELAY_MS)
+                {
+                    const Cube::SliceMove* slice_move = dynamic_cast<const Cube::SliceMove*>(&move);
+                    const Cube::RotateMove* rotate_move = dynamic_cast<const Cube::RotateMove*>(&move);
+
+                    if (!slice_move && !rotate_move)
+                    {
+                        perform_move(move);
+                        if (secondary_model) secondary_model->perform_move(move);
+                        return;
+                    }
+
+                    Cube::Axis axis = slice_move ? slice_move->axis_ : rotate_move->axis_;
+                    Cube::Rotation rotation = slice_move ? slice_move->rotation_ : rotate_move->rotation_;
+                    double step_angle = slice_angle(axis, rotation) / n_steps;
+
+                    // Un-rotate the viewing angle so the slice/cube origins are canonical
+                    unrotate_viewing_angle(*this);
+                    if (secondary_model) unrotate_viewing_angle(*secondary_model);
+
+                    for (int step = 0; step < n_steps; ++step)
+                    {
+                        if (slice_move)
+                        {
+                            move_slice_by_angle(slice_move->axis_, slice_move->slice_, step_angle);
+                            if (secondary_model)
+                                secondary_model->move_slice_by_angle(slice_move->axis_, slice_move->slice_, step_angle);
+                        }
+                        else
+                        {
+                            rotate_by_angle(rotate_move->axis_, step_angle);
+                            if (secondary_model)
+                                secondary_model->rotate_by_angle(rotate_move->axis_, step_angle);
+                        }
+
+                        // Re-apply viewing angle so the repaint shows the correct perspective
+                        rerotate_viewing_angle(*this);
+                        if (secondary_model) rerotate_viewing_angle(*secondary_model);
+
+                        refresh_window->Refresh();
+                        refresh_window->Update();
+                        wxMilliSleep(step_delay_ms);
+
+                        if (step < n_steps - 1)
+                        {
+                            // Un-rotate again for the next animation step
+                            unrotate_viewing_angle(*this);
+                            if (secondary_model) unrotate_viewing_angle(*secondary_model);
+                        }
+                    }
+                    // After the final step both models are already in viewing orientation
+                }
+
+                void animate_inverse_move(const Cube::Move& move, wxWindow* refresh_window,
+                                          Cube3DModel* secondary_model = nullptr,
+                                          int n_steps = ANIMATION_STEPS,
+                                          int step_delay_ms = ANIMATION_STEP_DELAY_MS)
+                {
+                    const Cube::SliceMove* slice_move = dynamic_cast<const Cube::SliceMove*>(&move);
+                    const Cube::RotateMove* rotate_move = dynamic_cast<const Cube::RotateMove*>(&move);
+
+                    if (slice_move)
+                    {
+                        Cube::SliceMove inverse(*slice_move);
+                        inverse.rotation_ = Cube::invert(inverse.rotation_);
+                        animate_move(inverse, refresh_window, secondary_model, n_steps, step_delay_ms);
+                    }
+                    else if (rotate_move)
+                    {
+                        Cube::RotateMove inverse(*rotate_move);
+                        inverse.rotation_ = Cube::invert(inverse.rotation_);
+                        animate_move(inverse, refresh_window, secondary_model, n_steps, step_delay_ms);
+                    }
+                    else
+                    {
+                        perform_inverse_move(move);
+                        if (secondary_model) secondary_model->perform_inverse_move(move);
+                    }
                 }
 
             private:
+                // Remove the viewing angle from a model so rotations act in canonical space.
+                static void unrotate_viewing_angle(Cube3DModel& m)
+                {
+                    m.big_cube_.rotate_about_x_axis(VIEWING_ANGLE_X, m.big_cube_origin_);
+                    m.big_cube_.rotate_about_y_axis(-VIEWING_ANGLE_Y, m.big_cube_origin_);
+                }
+                // Re-apply the viewing angle after a canonical-space rotation step.
+                static void rerotate_viewing_angle(Cube3DModel& m)
+                {
+                    m.big_cube_.rotate_about_y_axis(VIEWING_ANGLE_Y, m.big_cube_origin_);
+                    m.big_cube_.rotate_about_x_axis(-VIEWING_ANGLE_X, m.big_cube_origin_);
+                }
+
+                // Compute the signed rotation angle in radians for a given axis/rotation.
+                // LeftFrontRightBack uses the opposite hand convention from the other two axes.
+                // The result is normalized to (-π, π] so that animation always takes the
+                // shortest angular path: e.g. ThreeQuarters becomes -π/2, not +3π/2.
+                static double slice_angle(const Cube::Axis axis, const Cube::Rotation rotation)
+                {
+                    double angle = static_cast<int>(rotation) * M_PI / 2.0;
+                    if (axis == Cube::LeftFrontRightBack) angle = -angle;
+                    if (angle > M_PI)  angle -= 2.0 * M_PI;
+                    else if (angle < -M_PI) angle += 2.0 * M_PI;
+                    return angle;
+                }
+
+                static const int ANIMATION_STEPS = 10;         // sub-steps per quarter turn
+                static const int ANIMATION_STEP_DELAY_MS = 10; // ms between steps (~100ms/quarter)
+                static constexpr double VIEWING_ANGLE_X = M_PI / 5.0;
+                static constexpr double VIEWING_ANGLE_Y = M_PI / 4.0;
                 Cube3D corner_cubes_[Cube::NumberOfCornerPieces];
                 Cube3D edge_cubes_[Cube::NumberOfEdgePieces];
                 Cube3D centre_cubes_[Cube::NumberOfFaces];
@@ -787,17 +902,15 @@ void CubeCanvas::OnLeftButtonDClick(wxMouseEvent& event)
     wxUnusedVar(event);
 }
 
-void CubeCanvas::OnButtonUndo(wxCommandEvent& event)
+void CubeCanvas::OnButtonUndo(wxCommandEvent& WXUNUSED(event))
 {
-    event.GetEventType();
     if (move_history_.empty())
     {
         return;
     }
     Cube::Move* last_move = *(move_history_.rbegin());
     last_move->perform_inverse(parent_->cube_);
-    cube3d_model_.perform_inverse_move(*last_move);
-    cube3d_model_small_.perform_inverse_move(*last_move);
+    cube3d_model_.animate_inverse_move(*last_move, this, &cube3d_model_small_);
     move_history_.erase(move_history_.end() - 1);
     parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(last_move->inverse_to_string().c_str()));
     delete last_move;
@@ -805,28 +918,25 @@ void CubeCanvas::OnButtonUndo(wxCommandEvent& event)
     parent_->Update();
 }
 
-void CubeCanvas::OnButtonSolve(wxCommandEvent& event)
+void CubeCanvas::OnButtonSolve(wxCommandEvent& WXUNUSED(event))
 {
-    event.GetEventType();
     Cube::move_sequence_type solution;
     parent_->cube_.solve(solution);
     for (auto& move : solution)
     {
-        perform_move(*move);
-        wxMilliSleep(100);
+        perform_move(*move);  // animation provides the visual delay
         delete move;
     }
 
 }
 
-void CubeCanvas::OnButtonRandomize(wxCommandEvent& event)
+void CubeCanvas::OnButtonRandomize(wxCommandEvent& WXUNUSED(event))
 {
-    event.GetEventType();
     Cube::move_sequence_type random_sequence;
     parent_->cube_.randomize(random_sequence);
     for (auto& move : random_sequence)
     {
-        perform_move(*move);
+        perform_move(*move, false);  // skip animation for batch scrambling
         delete move;
     }
 }
@@ -870,22 +980,33 @@ void CubeCanvas::OnButtonTest(wxCommandEvent& event)
     {
         for (int i = 0; i < 10000; ++i)
         {
-            OnButtonRandomize(event);
-            OnButtonSolve(event);
+            OnButtonRandomize(event);  // already no animation
+            Cube::move_sequence_type solution;
+            parent_->cube_.solve(solution);
+            for (auto& move : solution)
+            {
+                perform_move(*move, false);  // no animation for stress test
+                delete move;
+            }
         }
     }
     catch (const CubeException& e)
     {
-        e.what();
+        std::cerr << e.what() << std::endl;
         return;
     }
 }
 
-void CubeCanvas::perform_move(const Cube::Move& move)
+void CubeCanvas::perform_move(const Cube::Move& move, bool animate)
 {
     move.perform(parent_->cube_);
-    cube3d_model_.perform_move(move);
-    cube3d_model_small_.perform_move(move);
+    if (animate)
+        cube3d_model_.animate_move(move, this, &cube3d_model_small_);
+    else
+    {
+        cube3d_model_.perform_move(move);
+        cube3d_model_small_.perform_move(move);
+    }
     move_history_.push_back(move.clone());
     parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(move.to_string().c_str()));
     parent_->Refresh();

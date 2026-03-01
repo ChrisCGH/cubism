@@ -1,6 +1,5 @@
 #include "cube.h"
-#include <stdlib.h>
-#include <time.h>
+#include <random>
 #include <set>
 #include <map>
 #include <sstream>
@@ -419,13 +418,17 @@ int Cube::Face::count_corners(const Colour& colour) const
 
 void Cube::randomize(move_sequence_type& moves)
 {
-    srand(static_cast<unsigned int>(time(0)));
-    int count = rand() % 100 + 20;
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> axis_dist(0, NumberOfAxes - 1);
+    std::uniform_int_distribution<int> slice_dist(0, NumberOfSlices - 1);
+    std::uniform_int_distribution<int> rotation_dist(1, NumberOfRotations);
+    std::uniform_int_distribution<int> count_dist(20, 119);
+    int count = count_dist(rng);
     for (int i = 0; i < count; ++i)
     {
-        Axis axis = static_cast<Axis>(rand() % NumberOfAxes);
-        Slice slice = static_cast<Slice>(rand() % NumberOfSlices);
-        Rotation rotation = static_cast<Rotation>(rand() % NumberOfRotations + 1);
+        Axis axis = static_cast<Axis>(axis_dist(rng));
+        Slice slice = static_cast<Slice>(slice_dist(rng));
+        Rotation rotation = static_cast<Rotation>(rotation_dist(rng));
         Move* move = newSliceMove(axis, slice, rotation);
         moves.push_back(move);
     }
@@ -433,13 +436,17 @@ void Cube::randomize(move_sequence_type& moves)
 
 void Cube::randomize()
 {
-    srand(static_cast<unsigned int>(time(0)));
-    int count = rand() % 100 + 20;
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> axis_dist(0, NumberOfAxes - 1);
+    std::uniform_int_distribution<int> slice_dist(0, NumberOfSlices - 1);
+    std::uniform_int_distribution<int> rotation_dist(1, NumberOfRotations);
+    std::uniform_int_distribution<int> count_dist(20, 119);
+    int count = count_dist(rng);
     for (int i = 0; i < count; ++i)
     {
-        Axis axis = static_cast<Axis>(rand() % NumberOfAxes);
-        Slice slice = static_cast<Slice>(rand() % NumberOfSlices);
-        Rotation rotation = static_cast<Rotation>(rand() % NumberOfRotations + 1);
+        Axis axis = static_cast<Axis>(axis_dist(rng));
+        Slice slice = static_cast<Slice>(slice_dist(rng));
+        Rotation rotation = static_cast<Rotation>(rotation_dist(rng));
         move_slice(axis, slice, rotation);
     }
 }
