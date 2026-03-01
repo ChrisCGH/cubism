@@ -772,6 +772,7 @@ class CubeCanvas : public wxPanel
         directions drag_locked_direction_;
         double drag_angle_per_pixel_;
         double drag_current_angle_;
+        bool drag_is_whole_cube_;
         wxButton* randomize_button_;
         wxButton* solve_button_;
         wxButton* undo_button_;
@@ -881,6 +882,7 @@ CubeCanvas::CubeCanvas(CubeFrame* parent, int screen_width, int screen_height)
       drag_face_(Cube::TopFace), drag_cell_(Cube::TopLeftCorner),
       drag_axis_locked_(false), drag_axis_(Cube::TopBottom), drag_slice_(Cube::TopSlice),
       drag_locked_direction_(UP), drag_angle_per_pixel_(0.0), drag_current_angle_(0.0),
+      drag_is_whole_cube_(false),
       log_(0), move_history_(), cube3d_model_(parent->cube_), cube3d_model_small_(parent->cube_, 20)
 {
     parent_ = parent;
@@ -1987,101 +1989,203 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
     wxCoord ypos;
     event.GetPosition(&xpos, &ypos);
 
-    // ----- Active face-slice drag: handle events regardless of mouse position -----
+    // ----- Active drag (face slice OR whole cube): handle all events here -----
     if (start_drag_point_)
     {
-        if (event.Dragging())
+        if (drag_is_whole_cube_)
         {
-            int dx = xpos - start_drag_point_->x;
-            int dy = ypos - start_drag_point_->y;
-            double dist = std::sqrt((double)(dx * dx + dy * dy));
-
-            // Lock the rotation axis/slice after the pointer has moved far enough.
-            if (!drag_axis_locked_ && dist >= DRAG_LOCK_THRESHOLD_PX)
+            if (event.Dragging())
             {
-                double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                drag_locked_direction_ = get_direction(drag_face_, theta);
-                Cube::Rotation rotation;
-                get_slice_move(drag_face_, drag_cell_, drag_locked_direction_,
-                               drag_axis_, drag_slice_, rotation);
-                // angle_per_pixel: positive projection in lock direction → signed rotation angle
-                drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, rotation)
-                                        / DRAG_PIXELS_PER_QTR_TURN;
-                drag_axis_locked_ = true;
-            }
+                int dx = xpos - start_drag_point_->x;
+                int dy = ypos - start_drag_point_->y;
+                double dist = std::sqrt((double)(dx * dx + dy * dy));
 
-            if (drag_axis_locked_)
-            {
-                // Project total displacement onto the locked drag direction.
-                double projected = 0.0;
-                switch (drag_locked_direction_)
+                // Lock to dominant axis after threshold.
+                if (!drag_axis_locked_ && dist >= DRAG_LOCK_THRESHOLD_PX)
                 {
-                    case UP:    projected = -(double)dy; break;
-                    case DOWN:  projected = +(double)dy; break;
-                    case LEFT:  projected = -(double)dx; break;
-                    case RIGHT: projected = +(double)dx; break;
+                    if (std::abs(dx) >= std::abs(dy))
+                    {
+                        drag_axis_ = Cube::TopBottom;
+                        drag_locked_direction_ = (dx >= 0) ? RIGHT : LEFT;
+                    }
+                    else
+                    {
+                        drag_axis_ = Cube::RightFrontLeftBack;
+                        drag_locked_direction_ = (dy >= 0) ? DOWN : UP;
+                    }
+                    drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
+                                            / DRAG_PIXELS_PER_QTR_TURN;
+                    drag_axis_locked_ = true;
                 }
-                double new_angle = drag_angle_per_pixel_ * projected;
-                double delta = new_angle - drag_current_angle_;
 
-                // Apply incremental rotation to the 3D model.
-                cube3d_model_.begin_slice_drag();
-                cube3d_model_.move_slice_by_angle(drag_axis_, drag_slice_, delta);
-                cube3d_model_.end_slice_drag();
-                drag_current_angle_ = new_angle;
+                if (drag_axis_locked_)
+                {
+                    double projected = 0.0;
+                    switch (drag_locked_direction_)
+                    {
+                        case UP:    projected = -(double)dy; break;
+                        case DOWN:  projected = +(double)dy; break;
+                        case LEFT:  projected = -(double)dx; break;
+                        case RIGHT: projected = +(double)dx; break;
+                    }
+                    double new_angle = drag_angle_per_pixel_ * projected;
+                    double delta = new_angle - drag_current_angle_;
 
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_.end_slice_drag();
+                    cube3d_model_small_.begin_slice_drag();
+                    cube3d_model_small_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_small_.end_slice_drag();
+                    drag_current_angle_ = new_angle;
+
+                    parent_->Refresh();
+                    parent_->Update();
+                }
+            }
+            else if (event.ButtonUp())
+            {
+                if (drag_axis_locked_)
+                {
+                    // Snap to the nearest multiple of π/2.
+                    double snapped = std::round(drag_current_angle_ / (M_PI / 2.0)) * (M_PI / 2.0);
+                    double delta = snapped - drag_current_angle_;
+
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_.end_slice_drag();
+                    cube3d_model_small_.begin_slice_drag();
+                    cube3d_model_small_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_small_.end_slice_drag();
+
+                    if (std::abs(snapped) > DRAG_SNAP_EPSILON)
+                    {
+                        // Find the Cube::Rotation that matches `snapped`.
+                        Cube::Rotation rotation = Cube::Quarter;
+                        for (int ri = 1; ri <= 3; ++ri)
+                        {
+                            Cube::Rotation cand = static_cast<Cube::Rotation>(ri);
+                            double diff = Cube3DModel::get_slice_angle(drag_axis_, cand) - snapped;
+                            while (diff >  M_PI) diff -= 2.0 * M_PI;
+                            while (diff < -M_PI) diff += 2.0 * M_PI;
+                            if (std::abs(diff) < DRAG_ANGLE_MATCH_TOL)
+                            {
+                                rotation = cand;
+                                break;
+                            }
+                        }
+                        // Commit the logical rotate move.
+                        Cube::RotateMove move(drag_axis_, rotation, __LINE__);
+                        move.perform(parent_->cube_);
+                        move_history_.push_back(move.clone());
+                        parent_->GetStatusBar()->SetStatusText(
+                            wxString::FromAscii(move.to_string().c_str()));
+                    }
+                }
+
+                delete start_drag_point_;
+                start_drag_point_ = 0;
+                drag_axis_locked_ = false;
                 parent_->Refresh();
                 parent_->Update();
             }
         }
-        else if (event.ButtonUp())
+        else
         {
-            if (drag_axis_locked_)
+            // ----- Active face-slice drag -----
+            if (event.Dragging())
             {
-                // Snap to the nearest multiple of π/2 (quarter turn).
-                double snapped = std::round(drag_current_angle_ / (M_PI / 2.0)) * (M_PI / 2.0);
-                double delta = snapped - drag_current_angle_;
+                int dx = xpos - start_drag_point_->x;
+                int dy = ypos - start_drag_point_->y;
+                double dist = std::sqrt((double)(dx * dx + dy * dy));
 
-                cube3d_model_.begin_slice_drag();
-                cube3d_model_.move_slice_by_angle(drag_axis_, drag_slice_, delta);
-                cube3d_model_.end_slice_drag();
-
-                if (std::abs(snapped) > DRAG_SNAP_EPSILON)
+                // Lock the rotation axis/slice after the pointer has moved far enough.
+                if (!drag_axis_locked_ && dist >= DRAG_LOCK_THRESHOLD_PX)
                 {
-                    // Find the Cube::Rotation whose slice_angle matches `snapped` (mod 2π).
-                    Cube::Rotation rotation = Cube::Quarter;
-                    for (int ri = 1; ri <= 3; ++ri)
+                    double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
+                    drag_locked_direction_ = get_direction(drag_face_, theta);
+                    Cube::Rotation rotation;
+                    get_slice_move(drag_face_, drag_cell_, drag_locked_direction_,
+                                   drag_axis_, drag_slice_, rotation);
+                    // angle_per_pixel: positive projection in lock direction → signed rotation angle
+                    drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, rotation)
+                                            / DRAG_PIXELS_PER_QTR_TURN;
+                    drag_axis_locked_ = true;
+                }
+
+                if (drag_axis_locked_)
+                {
+                    // Project total displacement onto the locked drag direction.
+                    double projected = 0.0;
+                    switch (drag_locked_direction_)
                     {
-                        Cube::Rotation cand = static_cast<Cube::Rotation>(ri);
-                        double diff = Cube3DModel::get_slice_angle(drag_axis_, cand) - snapped;
-                        while (diff >  M_PI) diff -= 2.0 * M_PI;
-                        while (diff < -M_PI) diff += 2.0 * M_PI;
-                        if (std::abs(diff) < DRAG_ANGLE_MATCH_TOL)
-                        {
-                            rotation = cand;
-                            break;
-                        }
+                        case UP:    projected = -(double)dy; break;
+                        case DOWN:  projected = +(double)dy; break;
+                        case LEFT:  projected = -(double)dx; break;
+                        case RIGHT: projected = +(double)dx; break;
                     }
-                    // Commit the logical move (3D model already shows the result).
-                    Cube::SliceMove move(drag_axis_, drag_slice_, rotation, __LINE__);
-                    move.perform(parent_->cube_);
-                    cube3d_model_small_.perform_move(move);
-                    move_history_.push_back(move.clone());
-                    parent_->GetStatusBar()->SetStatusText(
-                        wxString::FromAscii(move.to_string().c_str()));
+                    double new_angle = drag_angle_per_pixel_ * projected;
+                    double delta = new_angle - drag_current_angle_;
+
+                    // Apply incremental rotation to the 3D model.
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.move_slice_by_angle(drag_axis_, drag_slice_, delta);
+                    cube3d_model_.end_slice_drag();
+                    drag_current_angle_ = new_angle;
+
+                    parent_->Refresh();
+                    parent_->Update();
                 }
             }
+            else if (event.ButtonUp())
+            {
+                if (drag_axis_locked_)
+                {
+                    // Snap to the nearest multiple of π/2 (quarter turn).
+                    double snapped = std::round(drag_current_angle_ / (M_PI / 2.0)) * (M_PI / 2.0);
+                    double delta = snapped - drag_current_angle_;
 
-            delete start_drag_point_;
-            start_drag_point_ = 0;
-            drag_axis_locked_ = false;
-            parent_->Refresh();
-            parent_->Update();
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.move_slice_by_angle(drag_axis_, drag_slice_, delta);
+                    cube3d_model_.end_slice_drag();
+
+                    if (std::abs(snapped) > DRAG_SNAP_EPSILON)
+                    {
+                        // Find the Cube::Rotation whose slice_angle matches `snapped` (mod 2π).
+                        Cube::Rotation rotation = Cube::Quarter;
+                        for (int ri = 1; ri <= 3; ++ri)
+                        {
+                            Cube::Rotation cand = static_cast<Cube::Rotation>(ri);
+                            double diff = Cube3DModel::get_slice_angle(drag_axis_, cand) - snapped;
+                            while (diff >  M_PI) diff -= 2.0 * M_PI;
+                            while (diff < -M_PI) diff += 2.0 * M_PI;
+                            if (std::abs(diff) < DRAG_ANGLE_MATCH_TOL)
+                            {
+                                rotation = cand;
+                                break;
+                            }
+                        }
+                        // Commit the logical move (3D model already shows the result).
+                        Cube::SliceMove move(drag_axis_, drag_slice_, rotation, __LINE__);
+                        move.perform(parent_->cube_);
+                        cube3d_model_small_.perform_move(move);
+                        move_history_.push_back(move.clone());
+                        parent_->GetStatusBar()->SetStatusText(
+                            wxString::FromAscii(move.to_string().c_str()));
+                    }
+                }
+
+                delete start_drag_point_;
+                start_drag_point_ = 0;
+                drag_axis_locked_ = false;
+                parent_->Refresh();
+                parent_->Update();
+            }
         }
         return;
     }
 
-    // ----- No active face drag: handle new interactions -----
+    // ----- No active drag: handle new interactions -----
     Cube::Faces face;
     Cube::Cells cell;
     bool on_face = cube_model_.get_cell(wxPoint(xpos, ypos), face, cell);
@@ -2095,25 +2199,19 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
             drag_cell_ = cell;
             drag_axis_locked_ = false;
             drag_current_angle_ = 0.0;
+            drag_is_whole_cube_ = false;
         }
     }
     else
     {
         if (event.LeftDown())
         {
-            last_mouse_pos_ = wxPoint(xpos, ypos);
-            is_translating_cube_ = true;
-        }
-        else if (event.Dragging() && event.LeftIsDown() && is_translating_cube_)
-        {
-            cube_drag_offset_.x += xpos - last_mouse_pos_.x;
-            cube_drag_offset_.y += ypos - last_mouse_pos_.y;
-            last_mouse_pos_ = wxPoint(xpos, ypos);
-            parent_->Refresh();
-        }
-        else if (event.LeftUp())
-        {
-            is_translating_cube_ = false;
+            start_drag_point_ = new wxPoint(xpos, ypos);
+            drag_face_ = Cube::TopFace;
+            drag_cell_ = Cube::TopLeftCorner;
+            drag_is_whole_cube_ = true;
+            drag_axis_locked_ = false;
+            drag_current_angle_ = 0.0;
         }
     }
 //    parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(oss.str().c_str()));
