@@ -693,6 +693,17 @@ class CubeCanvas : public wxPanel
                     }
                 }
 
+                // Put model into canonical (un-viewed) space ready for incremental slice drags.
+                void begin_slice_drag() { unrotate_viewing_angle(*this); }
+                // Restore the viewing angle after incremental slice drag steps.
+                void end_slice_drag()   { rerotate_viewing_angle(*this); }
+
+                // Public accessor for the signed rotation angle (radians) for a given axis/rotation.
+                static double get_slice_angle(const Cube::Axis axis, const Cube::Rotation rotation)
+                {
+                    return slice_angle(axis, rotation);
+                }
+
             private:
                 // Remove the viewing angle from a model so rotations act in canonical space.
                 static void unrotate_viewing_angle(Cube3DModel& m)
@@ -739,9 +750,29 @@ class CubeCanvas : public wxPanel
         int screen_height_;
         CubeModel cube_model_;
 
+        void get_slice_move(const Cube::Faces& face, const Cube::Cells& cell, directions direction,
+                            Cube::Axis& axis, Cube::Slice& slice, Cube::Rotation& rotation);
+
+        static constexpr double DRAG_LOCK_THRESHOLD_PX    = 5.0;   // pixels before direction is locked
+        static constexpr double DRAG_PIXELS_PER_QTR_TURN  = 150.0; // pixels per 90° of slice rotation
+        static constexpr double DRAG_SNAP_EPSILON          = 1e-9;  // treat snapped angle as zero below this
+        static constexpr double DRAG_ANGLE_MATCH_TOL       = 0.1;   // tolerance for matching rotations (rad)
+
         wxBrush* brushes_[Cube::NumberOfColours];
         CubeFrame* parent_;
         wxPoint* start_drag_point_;
+        wxPoint cube_drag_offset_;
+        wxPoint last_mouse_pos_;
+        bool is_translating_cube_;
+        Cube::Faces drag_face_;
+        Cube::Cells drag_cell_;
+        bool drag_axis_locked_;
+        Cube::Axis drag_axis_;
+        Cube::Slice drag_slice_;
+        directions drag_locked_direction_;
+        double drag_angle_per_pixel_;
+        double drag_current_angle_;
+        bool drag_is_whole_cube_;
         wxButton* randomize_button_;
         wxButton* solve_button_;
         wxButton* undo_button_;
@@ -847,7 +878,12 @@ CubeCanvas::CubeModel::CubeModel(const wxPoint& origin, int unit)
 CubeCanvas::CubeCanvas(CubeFrame* parent, int screen_width, int screen_height)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(screen_width, screen_height), wxNO_FULL_REPAINT_ON_RESIZE), 
       screen_width_(screen_width), screen_height_(screen_height), cube_model_(wxPoint(265,100)),
-      start_drag_point_(0), log_(0), move_history_(), cube3d_model_(parent->cube_), cube3d_model_small_(parent->cube_, 20)
+      start_drag_point_(0), cube_drag_offset_(0, 0), last_mouse_pos_(0, 0), is_translating_cube_(false),
+      drag_face_(Cube::TopFace), drag_cell_(Cube::TopLeftCorner),
+      drag_axis_locked_(false), drag_axis_(Cube::TopBottom), drag_slice_(Cube::TopSlice),
+      drag_locked_direction_(UP), drag_angle_per_pixel_(0.0), drag_current_angle_(0.0),
+      drag_is_whole_cube_(false),
+      log_(0), move_history_(), cube3d_model_(parent->cube_), cube3d_model_small_(parent->cube_, 20)
 {
     parent_ = parent;
 //    wxGraphicsRenderer* renderer = wxGraphicsRenderer::GetDefaultRenderer();
@@ -1508,7 +1544,7 @@ void CubeCanvas::draw_cube(wxDC& dc)
     //cube_model_.draw_cube(dc, brushes_, parent_->cube_);
     Projector projector(screen_width_, screen_height_);
 
-    draw_object3D(dc, projector, cube3d_model_.get_object(), wxPoint(0, 0));
+    draw_object3D(dc, projector, cube3d_model_.get_object(), cube_drag_offset_);
 
     Cube::RotateMove moves[] = { 
         Cube::RotateMove(Cube::TopBottom, Cube::Quarter, __LINE__),
@@ -1573,6 +1609,18 @@ void CubeCanvas::OnPaint(wxPaintEvent &WXUNUSED(event))
 
 void CubeCanvas::move_cube(const Cube::Faces& face, const Cube::Cells& cell, directions direction)
 {
+    Cube::Axis axis;
+    Cube::Slice slice;
+    Cube::Rotation rotation;
+    get_slice_move(face, cell, direction, axis, slice, rotation);
+    do_perform_move(axis, slice, rotation);
+}
+
+void CubeCanvas::get_slice_move(const Cube::Faces& face, const Cube::Cells& cell, directions direction,
+                                Cube::Axis& axis, Cube::Slice& slice, Cube::Rotation& rotation)
+{
+    // Provide safe defaults (should always be overwritten by the switch below)
+    axis = Cube::TopBottom; slice = Cube::TopSlice; rotation = Cube::Quarter;
     switch (face)
     {
         case Cube::TopFace:
@@ -1581,154 +1629,82 @@ void CubeCanvas::move_cube(const Cube::Faces& face, const Cube::Cells& cell, dir
                 case Cube::TopLeftCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::TopEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::TopRightCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::LeftEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::Centre:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::RightEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::BottomLeftCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::BottomEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
                     }
                     break;
                 case Cube::BottomRightCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::Quarter);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case RIGHT: axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
                     }
                     break;
             }
@@ -1739,154 +1715,82 @@ void CubeCanvas::move_cube(const Cube::Faces& face, const Cube::Cells& cell, dir
                 case Cube::TopLeftCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::TopEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::TopRightCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::LeftEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::Centre:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::RightEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::BottomLeftCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::BottomEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::BottomRightCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::RightFrontLeftBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case DOWN:  axis=Cube::RightFrontLeftBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
             }
@@ -1897,160 +1801,89 @@ void CubeCanvas::move_cube(const Cube::Faces& face, const Cube::Cells& cell, dir
                 case Cube::TopLeftCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::TopEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::TopRightCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::LeftEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::Centre:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::RightEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::BottomLeftCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::TopSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::TopSlice;    rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::BottomEdge:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::MiddleSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::MiddleSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
                 case Cube::BottomRightCorner:
                     switch (direction)
                     {
-                        case UP:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
-                        case DOWN:
-                            do_perform_move(Cube::LeftFrontRightBack, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case LEFT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::Quarter);
-                            break;
-                        case RIGHT:
-                            do_perform_move(Cube::TopBottom, Cube::BottomSlice, Cube::ThreeQuarters);
-                            break;
+                        case UP:    axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
+                        case DOWN:  axis=Cube::LeftFrontRightBack; slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case LEFT:  axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::Quarter;       break;
+                        case RIGHT: axis=Cube::TopBottom;          slice=Cube::BottomSlice; rotation=Cube::ThreeQuarters; break;
                     }
                     break;
             }
             break;
     }
 }
+
 
 double CubeCanvas::get_move_angle(const wxPoint& p1, const wxPoint& p2)
 {
@@ -2155,239 +1988,246 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
     wxCoord xpos;
     wxCoord ypos;
     event.GetPosition(&xpos, &ypos);
-    std::ostringstream oss;
-    oss << "X : " << xpos << ", Y : " << ypos;
-    Cube::Faces face;
-    Cube::Cells cell;
 
-    if (cube_model_.get_cell(wxPoint(xpos, ypos), face, cell))
+    // ----- Active drag (face slice OR whole cube): handle all events here -----
+    if (start_drag_point_)
     {
-        oss << " Face : " << Cube::Faces2string(face) << ", Cell : " << Cube::Cells2string(cell);
-        if (event.ButtonDown())
+        if (drag_is_whole_cube_)
         {
-            oss << ", ButtonDown";
-            start_drag_point_ = new wxPoint(xpos, ypos);
-        }
-        else if (event.ButtonUp())
-        {
-            oss << ", ButtonUp";
-            if (start_drag_point_)
+            if (event.Dragging())
             {
-                bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                if (moved)
+                int dx = xpos - start_drag_point_->x;
+                int dy = ypos - start_drag_point_->y;
+                double dist = std::sqrt((double)(dx * dx + dy * dy));
+
+                // Lock to dominant axis after threshold.
+                if (!drag_axis_locked_ && dist >= DRAG_LOCK_THRESHOLD_PX)
                 {
-                    move_cube(face, cell, *start_drag_point_, wxPoint(xpos, ypos));
-                    oss << ", Moved";
-                    parent_->Refresh();
+                    int center_x = screen_width_  / 2 + cube_drag_offset_.x;
+                    int center_y = screen_height_ / 2 + cube_drag_offset_.y;
+                    double side_sign = 1.0;
+                    if (std::abs(dx) >= std::abs(dy))
+                    {
+                        drag_axis_ = Cube::TopBottom;
+                        drag_locked_direction_ = (dx >= 0) ? RIGHT : LEFT;
+                        // Trackball: above centre → same direction; below centre → opposite.
+                        side_sign = (start_drag_point_->y < center_y) ? 1.0 : -1.0;
+                    }
+                    else
+                    {
+                        drag_axis_ = Cube::RightFrontLeftBack;
+                        drag_locked_direction_ = (dy >= 0) ? DOWN : UP;
+                        // Trackball: right of centre → same direction; left of centre → opposite.
+                        side_sign = (start_drag_point_->x > center_x) ? 1.0 : -1.0;
+                    }
+                    drag_angle_per_pixel_ = side_sign
+                                            * Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
+                                            / DRAG_PIXELS_PER_QTR_TURN;
+                    drag_axis_locked_ = true;
+                    SetCursor(wxCursor((drag_locked_direction_ == LEFT || drag_locked_direction_ == RIGHT)
+                                       ? wxCURSOR_SIZEWE : wxCURSOR_SIZENS));
                 }
+
+                if (drag_axis_locked_)
+                {
+                    double projected = 0.0;
+                    switch (drag_locked_direction_)
+                    {
+                        case UP:
+                        case DOWN:  projected = (double)dy; break;
+                        case LEFT:
+                        case RIGHT: projected = (double)dx; break;
+                    }
+                    double new_angle = drag_angle_per_pixel_ * projected;
+                    double delta = new_angle - drag_current_angle_;
+
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_.end_slice_drag();
+                    cube3d_model_small_.begin_slice_drag();
+                    cube3d_model_small_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_small_.end_slice_drag();
+                    drag_current_angle_ = new_angle;
+
+                    parent_->Refresh();
+                    parent_->Update();
+                }
+            }
+            else if (event.ButtonUp())
+            {
+                if (drag_axis_locked_)
+                {
+                    // Snap to the nearest multiple of π/2.
+                    double snapped = std::round(drag_current_angle_ / (M_PI / 2.0)) * (M_PI / 2.0);
+                    double delta = snapped - drag_current_angle_;
+
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_.end_slice_drag();
+                    cube3d_model_small_.begin_slice_drag();
+                    cube3d_model_small_.rotate_by_angle(drag_axis_, delta);
+                    cube3d_model_small_.end_slice_drag();
+
+                    if (std::abs(snapped) > DRAG_SNAP_EPSILON)
+                    {
+                        // Find the Cube::Rotation that matches `snapped`.
+                        Cube::Rotation rotation = Cube::Quarter;
+                        for (int ri = 1; ri <= 3; ++ri)
+                        {
+                            Cube::Rotation cand = static_cast<Cube::Rotation>(ri);
+                            double diff = Cube3DModel::get_slice_angle(drag_axis_, cand) - snapped;
+                            while (diff >  M_PI) diff -= 2.0 * M_PI;
+                            while (diff < -M_PI) diff += 2.0 * M_PI;
+                            if (std::abs(diff) < DRAG_ANGLE_MATCH_TOL)
+                            {
+                                rotation = cand;
+                                break;
+                            }
+                        }
+                        // Commit the logical rotate move.
+                        Cube::RotateMove move(drag_axis_, rotation, __LINE__);
+                        move.perform(parent_->cube_);
+                        move_history_.push_back(move.clone());
+                        parent_->GetStatusBar()->SetStatusText(
+                            wxString::FromAscii(move.to_string().c_str()));
+                    }
+                }
+
                 delete start_drag_point_;
                 start_drag_point_ = 0;
+                drag_axis_locked_ = false;
+                SetCursor(wxCursor(wxCURSOR_SIZING));
+                parent_->Refresh();
+                parent_->Update();
             }
         }
-        if (event.Dragging())
+        else
         {
-            oss << ", Dragging";
+            // ----- Active face-slice drag -----
+            if (event.Dragging())
+            {
+                int dx = xpos - start_drag_point_->x;
+                int dy = ypos - start_drag_point_->y;
+                double dist = std::sqrt((double)(dx * dx + dy * dy));
+
+                // Lock the rotation axis/slice after the pointer has moved far enough.
+                if (!drag_axis_locked_ && dist >= DRAG_LOCK_THRESHOLD_PX)
+                {
+                    double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
+                    drag_locked_direction_ = get_direction(drag_face_, theta);
+                    Cube::Rotation rotation;
+                    get_slice_move(drag_face_, drag_cell_, drag_locked_direction_,
+                                   drag_axis_, drag_slice_, rotation);
+                    // angle_per_pixel: positive projection in lock direction → signed rotation angle
+                    drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, rotation)
+                                            / DRAG_PIXELS_PER_QTR_TURN;
+                    drag_axis_locked_ = true;
+                    SetCursor(wxCursor((drag_locked_direction_ == LEFT || drag_locked_direction_ == RIGHT)
+                                       ? wxCURSOR_SIZEWE : wxCURSOR_SIZENS));
+                }
+
+                if (drag_axis_locked_)
+                {
+                    // Project total displacement onto the locked drag direction.
+                    double projected = 0.0;
+                    switch (drag_locked_direction_)
+                    {
+                        case UP:    projected = -(double)dy; break;
+                        case DOWN:  projected = +(double)dy; break;
+                        case LEFT:  projected = -(double)dx; break;
+                        case RIGHT: projected = +(double)dx; break;
+                    }
+                    double new_angle = drag_angle_per_pixel_ * projected;
+                    double delta = new_angle - drag_current_angle_;
+
+                    // Apply incremental rotation to the 3D model.
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.move_slice_by_angle(drag_axis_, drag_slice_, delta);
+                    cube3d_model_.end_slice_drag();
+                    drag_current_angle_ = new_angle;
+
+                    parent_->Refresh();
+                    parent_->Update();
+                }
+            }
+            else if (event.ButtonUp())
+            {
+                if (drag_axis_locked_)
+                {
+                    // Snap to the nearest multiple of π/2 (quarter turn).
+                    double snapped = std::round(drag_current_angle_ / (M_PI / 2.0)) * (M_PI / 2.0);
+                    double delta = snapped - drag_current_angle_;
+
+                    cube3d_model_.begin_slice_drag();
+                    cube3d_model_.move_slice_by_angle(drag_axis_, drag_slice_, delta);
+                    cube3d_model_.end_slice_drag();
+
+                    if (std::abs(snapped) > DRAG_SNAP_EPSILON)
+                    {
+                        // Find the Cube::Rotation whose slice_angle matches `snapped` (mod 2π).
+                        Cube::Rotation rotation = Cube::Quarter;
+                        for (int ri = 1; ri <= 3; ++ri)
+                        {
+                            Cube::Rotation cand = static_cast<Cube::Rotation>(ri);
+                            double diff = Cube3DModel::get_slice_angle(drag_axis_, cand) - snapped;
+                            while (diff >  M_PI) diff -= 2.0 * M_PI;
+                            while (diff < -M_PI) diff += 2.0 * M_PI;
+                            if (std::abs(diff) < DRAG_ANGLE_MATCH_TOL)
+                            {
+                                rotation = cand;
+                                break;
+                            }
+                        }
+                        // Commit the logical move (3D model already shows the result).
+                        Cube::SliceMove move(drag_axis_, drag_slice_, rotation, __LINE__);
+                        move.perform(parent_->cube_);
+                        cube3d_model_small_.perform_move(move);
+                        move_history_.push_back(move.clone());
+                        parent_->GetStatusBar()->SetStatusText(
+                            wxString::FromAscii(move.to_string().c_str()));
+                    }
+                }
+
+                delete start_drag_point_;
+                start_drag_point_ = 0;
+                drag_axis_locked_ = false;
+                SetCursor(wxCursor(wxCURSOR_HAND));
+                parent_->Refresh();
+                parent_->Update();
+            }
+        }
+        return;
+    }
+
+    // ----- No active drag: handle new interactions -----
+    Cube::Faces face;
+    Cube::Cells cell;
+    bool on_face = cube_model_.get_cell(wxPoint(xpos, ypos), face, cell);
+
+    SetCursor(wxCursor(on_face ? wxCURSOR_HAND : wxCURSOR_SIZING));
+
+    if (on_face)
+    {
+        if (event.LeftDown())
+        {
+            start_drag_point_ = new wxPoint(xpos, ypos);
+            drag_face_ = face;
+            drag_cell_ = cell;
+            drag_axis_locked_ = false;
+            drag_current_angle_ = 0.0;
+            drag_is_whole_cube_ = false;
         }
     }
     else
     {
-        if (cube_model_.right_of_top_face(wxPoint(xpos, ypos)))
+        if (event.LeftDown())
         {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::TopFace, theta);
-                        if (direction == UP)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == DOWN)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.right_of_right_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::RightFrontFace, theta);
-                        if (direction == UP)
-                        {
-                            do_perform_rotate_move(Cube::LeftFrontRightBack, Cube::ThreeQuarters);
-                        }
-                        else if (direction == DOWN)
-                        {
-                            do_perform_rotate_move(Cube::LeftFrontRightBack, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.below_right_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::RightFrontFace, theta);
-                        if (direction == RIGHT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == LEFT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.below_left_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::LeftFrontFace, theta);
-                        if (direction == RIGHT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == LEFT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.left_of_left_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::LeftFrontFace, theta);
-                        if (direction == UP)
-                        {
-                            do_perform_rotate_move(Cube::RightFrontLeftBack, Cube::Quarter);
-                        }
-                        else if (direction == DOWN)
-                        {
-                            do_perform_rotate_move(Cube::RightFrontLeftBack, Cube::ThreeQuarters);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
-        }
-        else if (cube_model_.above_top_face(wxPoint(xpos, ypos)))
-        {
-            if (event.ButtonDown())
-            {
-                oss << ", ButtonDown";
-                start_drag_point_ = new wxPoint(xpos, ypos);
-            }
-            else if (event.ButtonUp())
-            {
-                oss << ", ButtonUp";
-                if (start_drag_point_)
-                {
-                    bool moved = (start_drag_point_->x != xpos || start_drag_point_->y != ypos);
-                    if (moved)
-                    {
-                        double theta = get_move_angle(*start_drag_point_, wxPoint(xpos, ypos));
-                        directions direction = get_direction(Cube::TopFace, theta);
-                        if (direction == LEFT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::ThreeQuarters);
-                        }
-                        else if (direction == RIGHT)
-                        {
-                            do_perform_rotate_move(Cube::TopBottom, Cube::Quarter);
-                        }
-                        oss << ", Moved";
-                        parent_->Refresh();
-                    }
-                    delete start_drag_point_;
-                    start_drag_point_ = 0;
-                }
-            }
+            start_drag_point_ = new wxPoint(xpos, ypos);
+            drag_face_ = Cube::TopFace;
+            drag_cell_ = Cube::TopLeftCorner;
+            drag_is_whole_cube_ = true;
+            drag_axis_locked_ = false;
+            drag_current_angle_ = 0.0;
         }
     }
 //    parent_->GetStatusBar()->SetStatusText(wxString::FromAscii(oss.str().c_str()));
