@@ -2024,6 +2024,8 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
                                             * Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
                                             / DRAG_PIXELS_PER_QTR_TURN;
                     drag_axis_locked_ = true;
+                    SetCursor(wxCursor((drag_locked_direction_ == LEFT || drag_locked_direction_ == RIGHT)
+                                       ? wxCURSOR_SIZEWE : wxCURSOR_SIZENS));
                 }
 
                 if (drag_axis_locked_)
@@ -2094,6 +2096,7 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
                 delete start_drag_point_;
                 start_drag_point_ = 0;
                 drag_axis_locked_ = false;
+                SetCursor(wxCursor(wxCURSOR_SIZING));
                 parent_->Refresh();
                 parent_->Update();
             }
@@ -2119,6 +2122,8 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
                     drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, rotation)
                                             / DRAG_PIXELS_PER_QTR_TURN;
                     drag_axis_locked_ = true;
+                    SetCursor(wxCursor((drag_locked_direction_ == LEFT || drag_locked_direction_ == RIGHT)
+                                       ? wxCURSOR_SIZEWE : wxCURSOR_SIZENS));
                 }
 
                 if (drag_axis_locked_)
@@ -2186,6 +2191,7 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
                 delete start_drag_point_;
                 start_drag_point_ = 0;
                 drag_axis_locked_ = false;
+                SetCursor(wxCursor(wxCURSOR_HAND));
                 parent_->Refresh();
                 parent_->Update();
             }
@@ -2197,6 +2203,8 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
     Cube::Faces face;
     Cube::Cells cell;
     bool on_face = cube_model_.get_cell(wxPoint(xpos, ypos), face, cell);
+
+    SetCursor(wxCursor(on_face ? wxCURSOR_HAND : wxCURSOR_SIZING));
 
     if (on_face)
     {
