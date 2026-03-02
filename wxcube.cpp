@@ -2013,7 +2013,7 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
                         drag_axis_ = Cube::RightFrontLeftBack;
                         drag_locked_direction_ = (dy >= 0) ? DOWN : UP;
                     }
-                    drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
+                    drag_angle_per_pixel_ = -Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
                                             / DRAG_PIXELS_PER_QTR_TURN;
                     drag_axis_locked_ = true;
                 }
