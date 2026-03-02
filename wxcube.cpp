@@ -2003,17 +2003,25 @@ void CubeCanvas::OnMouseMove(wxMouseEvent &event)
                 // Lock to dominant axis after threshold.
                 if (!drag_axis_locked_ && dist >= DRAG_LOCK_THRESHOLD_PX)
                 {
+                    int center_x = screen_width_  / 2 + cube_drag_offset_.x;
+                    int center_y = screen_height_ / 2 + cube_drag_offset_.y;
+                    double side_sign = 1.0;
                     if (std::abs(dx) >= std::abs(dy))
                     {
                         drag_axis_ = Cube::TopBottom;
                         drag_locked_direction_ = (dx >= 0) ? RIGHT : LEFT;
+                        // Trackball: above centre → same direction; below centre → opposite.
+                        side_sign = (start_drag_point_->y < center_y) ? 1.0 : -1.0;
                     }
                     else
                     {
                         drag_axis_ = Cube::RightFrontLeftBack;
                         drag_locked_direction_ = (dy >= 0) ? DOWN : UP;
+                        // Trackball: right of centre → same direction; left of centre → opposite.
+                        side_sign = (start_drag_point_->x > center_x) ? 1.0 : -1.0;
                     }
-                    drag_angle_per_pixel_ = Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
+                    drag_angle_per_pixel_ = side_sign
+                                            * Cube3DModel::get_slice_angle(drag_axis_, Cube::Quarter)
                                             / DRAG_PIXELS_PER_QTR_TURN;
                     drag_axis_locked_ = true;
                 }
